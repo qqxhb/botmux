@@ -1992,9 +1992,11 @@ const SCREEN_UPDATE_INTERVAL_MS = 2_000;
 const MAX_SCROLLBACK = 1_000_000; // chars (~1MB)
 let scrollback = '';
 const WORKFLOW_TRANSCRIPT_MAX = 2_000_000; // chars (~2MB)
+const WORKFLOW_OUTPUT_BEGIN_MARKER = '<WORKFLOW_OUTPUT>';
 const WORKFLOW_OUTPUT_END_MARKER = '</WORKFLOW_OUTPUT>';
 let workflowTranscript = '';
 let workflowFinalOutputSent = false;
+let workflowStructuredOutputSent = false;
 /** Tracks whether the CLI is currently in the alt screen buffer. Updated by
  *  scanning PTY output for DECSET 1049/47/1047 toggles. Used when trimming
  *  scrollback at cap so replay always starts with the correct buffer mode —
@@ -2050,23 +2052,57 @@ function appendWorkflowPtyLog(data: string): void {
 
 function captureWorkflowTranscript(data: string): void {
   appendWorkflowPtyLog(data);
-  if (!isWorkflowWorker() || workflowFinalOutputSent) return;
+  if (!isWorkflowWorker() || workflowStructuredOutputSent) return;
   workflowTranscript += data;
   if (workflowTranscript.length > WORKFLOW_TRANSCRIPT_MAX) {
     workflowTranscript = workflowTranscript.slice(-WORKFLOW_TRANSCRIPT_MAX);
   }
 }
 
+function extractWorkflowOutputEnvelope(text: string): string | undefined {
+  const lastEnd = text.lastIndexOf(WORKFLOW_OUTPUT_END_MARKER);
+  if (lastEnd < 0) return undefined;
+  const begin = text.lastIndexOf(WORKFLOW_OUTPUT_BEGIN_MARKER, lastEnd);
+  if (begin < 0) return undefined;
+  const end = lastEnd + WORKFLOW_OUTPUT_END_MARKER.length;
+  return text.slice(begin, end);
+}
+
+function emitWorkflowStructuredOutput(
+  content: string,
+  source: 'bridge-final-output' | 'pty-transcript',
+  turnId: string,
+): void {
+  if (!isWorkflowWorker() || workflowStructuredOutputSent) return;
+  workflowStructuredOutputSent = true;
+  process.send?.({
+    type: 'workflow_structured_output',
+    content,
+    source,
+    turnId,
+  } satisfies WorkerToDaemon);
+  log(`Workflow structured output emitted from ${source}`);
+}
+
+function maybeEmitWorkflowStructuredOutputFromText(
+  text: string,
+  source: 'bridge-final-output' | 'pty-transcript',
+  turnId: string,
+): void {
+  if (!isWorkflowWorker() || workflowStructuredOutputSent) return;
+  const content = extractWorkflowOutputEnvelope(text);
+  if (!content) return;
+  emitWorkflowStructuredOutput(content, source, turnId);
+}
+
 function maybeEmitWorkflowTranscriptOutput(): void {
-  if (!isWorkflowWorker() || workflowFinalOutputSent) return;
+  if (!isWorkflowWorker() || workflowStructuredOutputSent) return;
   if (!workflowTranscript.includes(WORKFLOW_OUTPUT_END_MARKER)) return;
-  send({
-    type: 'final_output',
-    content: workflowTranscript,
-    lastUuid: `workflow-pty-${Date.now()}`,
-    turnId: currentBotmuxTurnId ?? `workflow-pty-${sessionId || 'unknown'}`,
-  });
-  log('Workflow PTY transcript final_output emitted');
+  maybeEmitWorkflowStructuredOutputFromText(
+    workflowTranscript,
+    'pty-transcript',
+    currentBotmuxTurnId ?? `workflow-pty-${sessionId || 'unknown'}`,
+  );
 }
 
 function startScreenAnalyzer(): void {
@@ -4262,6 +4298,9 @@ if(isTouch&&hasToken){
 // ─── IPC Communication ───────────────────────────────────────────────────────
 
 function send(msg: WorkerToDaemon): void {
+  if (isWorkflowWorker() && msg.type === 'final_output') {
+    maybeEmitWorkflowStructuredOutputFromText(msg.content, 'bridge-final-output', msg.turnId);
+  }
   if (isWorkflowWorker() && msg.type === 'final_output') {
     workflowFinalOutputSent = true;
   }

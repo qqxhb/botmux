@@ -284,4 +284,14 @@ export type WorkerToDaemon =
       kind?: 'bridge' | 'local-turn' | 'local-turn-headless';
       userText?: string;
     }
+  | {
+      // Workflow-only structured output channel. The worker emits this from
+      // clean assistant-text sources (bridge final_output) and, as a guarded
+      // fallback, from transcript marker extraction. Daemon workflow spawn
+      // consumes this in preference to transcript-style final_output.
+      type: 'workflow_structured_output';
+      content: string;
+      turnId: string;
+      source: 'bridge-final-output' | 'pty-transcript';
+    }
   | { type: 'adopt_preamble'; userText: string; assistantText: string; turnId?: string };

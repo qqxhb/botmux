@@ -130,6 +130,34 @@ describe('createWorkflowDaemonSpawn', () => {
     expect(result.finalTranscript).not.toContain('draft v1');
   });
 
+  it('prefers workflow_structured_output over noisy final_output payloads', async () => {
+    const deps = createWorkflowDaemonSpawn({
+      resolveLarkCredentials: () => fakeCreds,
+      quiesceMs: 30,
+      factory: scriptedFactory((s) => {
+        s.emit({ type: 'ready', port: 1, token: 't' });
+        s.emit({
+          type: 'final_output',
+          content:
+            'terminal noise\n' +
+            `${WORKFLOW_OUTPUT_BEGIN}\n›Implement {feature}\n{"wrong":true}\n${WORKFLOW_OUTPUT_END}`,
+          lastUuid: 'a',
+          turnId: 't1',
+        });
+        s.emit({
+          type: 'workflow_structured_output',
+          content: `${WORKFLOW_OUTPUT_BEGIN}\n{"ok":true}\n${WORKFLOW_OUTPUT_END}`,
+          source: 'bridge-final-output',
+          turnId: 't1',
+        });
+        s.emit({ type: 'prompt_ready' });
+      }),
+    });
+    const result = await deps.runOneShot(baseInput);
+    expect(result.finalTranscript).toContain('"ok":true');
+    expect(result.finalTranscript).not.toContain('"wrong":true');
+  });
+
   it('rejects when CLI exits without final_output', async () => {
     const deps = createWorkflowDaemonSpawn({
       resolveLarkCredentials: () => fakeCreds,
