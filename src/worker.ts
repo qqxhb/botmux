@@ -2068,6 +2068,109 @@ function extractWorkflowOutputEnvelope(text: string): string | undefined {
   return text.slice(begin, end);
 }
 
+function sanitizeWorkflowOutputBlock(block: string): string {
+  return block
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .trim();
+}
+
+function findJsonSpanEnd(text: string, start: number): number {
+  const open = text[start];
+  const close = open === '{' ? '}' : open === '[' ? ']' : '';
+  if (!close) return -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === open) {
+      depth += 1;
+      continue;
+    }
+    if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return i;
+      continue;
+    }
+  }
+  return -1;
+}
+
+function recoverJsonFromNoisyBlock(text: string): string | undefined {
+  const s = text.trim();
+  let best: { candidate: string; length: number } | undefined;
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i];
+    if (ch !== '{' && ch !== '[') continue;
+    const end = findJsonSpanEnd(s, i);
+    if (end < 0) continue;
+    const candidate = s.slice(i, end + 1).trim();
+    try {
+      JSON.parse(candidate);
+      if (!best || candidate.length > best.length) {
+        best = { candidate, length: candidate.length };
+      }
+      continue;
+    } catch {
+      // PTY hard-wrapping can inject raw newlines inside JSON strings.
+      // Retrying without line breaks often reconstructs valid one-line JSON.
+      const compact = candidate.replace(/[\r\n]+/g, '');
+      try {
+        JSON.parse(compact);
+        if (!best || compact.length > best.length) {
+          best = { candidate: compact, length: compact.length };
+        }
+      } catch {
+        // keep scanning
+      }
+    }
+  }
+  return best?.candidate;
+}
+
+function normalizeWorkflowOutputEnvelopeFromPty(text: string): string | undefined {
+  const envelope = extractWorkflowOutputEnvelope(text);
+  if (!envelope) return undefined;
+  const lastEnd = envelope.lastIndexOf(WORKFLOW_OUTPUT_END_MARKER);
+  const begin = envelope.indexOf(WORKFLOW_OUTPUT_BEGIN_MARKER);
+  if (begin < 0 || lastEnd < 0 || lastEnd <= begin) return undefined;
+  const rawBlock = envelope
+    .slice(begin + WORKFLOW_OUTPUT_BEGIN_MARKER.length, lastEnd)
+    .trim();
+  const block = sanitizeWorkflowOutputBlock(rawBlock);
+  let value: unknown;
+  try {
+    value = JSON.parse(block);
+  } catch {
+    const recovered = recoverJsonFromNoisyBlock(block);
+    if (!recovered) return undefined;
+    try {
+      value = JSON.parse(recovered);
+    } catch {
+      return undefined;
+    }
+  }
+  return `${WORKFLOW_OUTPUT_BEGIN_MARKER}\n${JSON.stringify(value)}\n${WORKFLOW_OUTPUT_END_MARKER}`;
+}
+
 function emitWorkflowStructuredOutput(
   content: string,
   source: 'bridge-final-output' | 'pty-transcript',
@@ -2090,7 +2193,9 @@ function maybeEmitWorkflowStructuredOutputFromText(
   turnId: string,
 ): void {
   if (!isWorkflowWorker() || workflowStructuredOutputSent) return;
-  const content = extractWorkflowOutputEnvelope(text);
+  const content = source === 'pty-transcript'
+    ? normalizeWorkflowOutputEnvelopeFromPty(text)
+    : extractWorkflowOutputEnvelope(text);
   if (!content) return;
   emitWorkflowStructuredOutput(content, source, turnId);
 }
