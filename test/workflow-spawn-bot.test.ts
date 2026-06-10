@@ -75,6 +75,19 @@ describe('parseWorkflowOutput', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toEqual({ plan: 'helloworld', highlights: ['a'] });
   });
+
+  it('recovers trailing JSON when marker block contains prompt/UI noise before final JSON', () => {
+    const text =
+      `${WORKFLOW_OUTPUT_BEGIN}\n{"...your JSON output..."}\n${WORKFLOW_OUTPUT_END}\n` +
+      `\u001b[1m›\u001b[22m Use /skills to list available skills\n` +
+      `${WORKFLOW_OUTPUT_BEGIN}\n` +
+      `\u001b[2mnoise from PTY redraw\u001b[0m\n` +
+      `{"ok":true,"state":{"stage":"RECEIVED"}}\n` +
+      `${WORKFLOW_OUTPUT_END}`;
+    const result = parseWorkflowOutput(text);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toEqual({ ok: true, state: { stage: 'RECEIVED' } });
+  });
 });
 
 describe('withWorkflowOutputProtocol', () => {

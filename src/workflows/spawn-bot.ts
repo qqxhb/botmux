@@ -91,6 +91,14 @@ export function parseWorkflowOutput(text: string): ParseWorkflowOutputResult {
   try {
     return { ok: true, value: JSON.parse(block), raw: block };
   } catch (err) {
+    const recovered = recoverTrailingJsonObjectOrArray(block);
+    if (recovered !== undefined) {
+      try {
+        return { ok: true, value: JSON.parse(recovered), raw: recovered };
+      } catch {
+        // keep original parser error below for better diagnostics
+      }
+    }
     return {
       ok: false,
       reason: 'invalid-json',
@@ -110,6 +118,23 @@ function sanitizeWorkflowOutputBlock(block: string): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .trim();
+}
+
+function recoverTrailingJsonObjectOrArray(text: string): string | undefined {
+  const s = text.trim();
+  for (let i = s.length - 1; i >= 0; i -= 1) {
+    const ch = s[i];
+    if (ch !== '{' && ch !== '[') continue;
+    const candidate = s.slice(i).trim();
+    if (!candidate) continue;
+    try {
+      JSON.parse(candidate);
+      return candidate;
+    } catch {
+      // keep scanning older opening braces/brackets
+    }
+  }
+  return undefined;
 }
 
 // ─── Stub factory (test / dev) ────────────────────────────────────────────
