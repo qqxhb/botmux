@@ -1996,6 +1996,14 @@ function setupWorkerHandlers(ds: DaemonSession, worker: ChildProcess): void {
         break;
       }
 
+      case 'workflow_structured_output': {
+        // Workflow daemon-spawn workers consume this signal directly and do
+        // not route through WorkerPool. Keep a no-op guard here so widening
+        // WorkerToDaemon doesn't affect regular session routing.
+        logger.debug(`[${t}] Ignored workflow_structured_output in worker-pool path`);
+        break;
+      }
+
       case 'adopt_preamble': {
         // Adopt-bridge: surface the last completed user/assistant exchange
         // from the adopted CLI session so the Lark thread has context to

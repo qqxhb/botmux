@@ -47,6 +47,12 @@ type WorkerEvent =
   | { type: 'ready'; port: number; token: string }
   | { type: 'cli_session_id'; cliSessionId: string }
   | {
+      type: 'workflow_structured_output';
+      content: string;
+      turnId: string;
+      source: 'bridge-final-output' | 'pty-transcript';
+    }
+  | {
       type: 'final_output';
       content: string;
       lastUuid: string;
@@ -234,6 +240,7 @@ async function runOneShotImpl(
 
   let webPort: number | undefined;
   const collectedOutputs: Array<{ content: string; turnId: string }> = [];
+  const collectedStructuredOutputs: Array<{ content: string; turnId: string; source: string }> = [];
   let quiesceTimer: NodeJS.Timeout | undefined;
   const cliId = input.botSnapshot?.cliId ?? 'claude-code';
   let cliSessionId: string | undefined;
@@ -396,7 +403,8 @@ async function runOneShotImpl(
         return;
       }
       cleanup();
-      const last = collectedOutputs[collectedOutputs.length - 1];
+      const preferred = collectedStructuredOutputs[collectedStructuredOutputs.length - 1];
+      const last = preferred ?? collectedOutputs[collectedOutputs.length - 1];
       if (!last) {
         fail(new Error('workflow worker quiesced without final_output'));
         return;
@@ -459,13 +467,30 @@ async function runOneShotImpl(
           });
           armQuiesce();
           break;
+        case 'workflow_structured_output':
+          if (settled) break;
+          appendAttemptLog(
+            input,
+            `workflow_structured_output:${event.turnId}:${event.source}`,
+            event.content,
+          );
+          collectedStructuredOutputs.push({
+            content: event.content,
+            turnId: event.turnId,
+            source: event.source,
+          });
+          armQuiesce();
+          break;
         case 'screen_update':
-          if (event.status === 'idle' && collectedOutputs.length > 0) {
+          if (
+            event.status === 'idle' &&
+            (collectedOutputs.length > 0 || collectedStructuredOutputs.length > 0)
+          ) {
             armQuiesce();
           }
           break;
         case 'prompt_ready':
-          if (collectedOutputs.length > 0) armQuiesce();
+          if (collectedOutputs.length > 0 || collectedStructuredOutputs.length > 0) armQuiesce();
           break;
         case 'error':
           appendAttemptLog(input, 'error', event.message);
@@ -477,7 +502,7 @@ async function runOneShotImpl(
             'system',
             `CLI exited code=${event.code ?? 'null'} signal=${event.signal ?? 'null'}`,
           );
-          if (collectedOutputs.length > 0) {
+          if (collectedOutputs.length > 0 || collectedStructuredOutputs.length > 0) {
             finish();
           } else {
             fail(
