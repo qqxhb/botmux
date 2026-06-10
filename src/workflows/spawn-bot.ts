@@ -91,7 +91,7 @@ export function parseWorkflowOutput(text: string): ParseWorkflowOutputResult {
   try {
     return { ok: true, value: JSON.parse(block), raw: block };
   } catch (err) {
-    const recovered = recoverTrailingJsonObjectOrArray(block);
+    const recovered = recoverJsonFromNoisyBlock(block);
     if (recovered !== undefined) {
       try {
         return { ok: true, value: JSON.parse(recovered), raw: recovered };
@@ -120,21 +120,63 @@ function sanitizeWorkflowOutputBlock(block: string): string {
     .trim();
 }
 
-function recoverTrailingJsonObjectOrArray(text: string): string | undefined {
+function recoverJsonFromNoisyBlock(text: string): string | undefined {
   const s = text.trim();
-  for (let i = s.length - 1; i >= 0; i -= 1) {
+  let best: { candidate: string; length: number } | undefined;
+  for (let i = 0; i < s.length; i += 1) {
     const ch = s[i];
     if (ch !== '{' && ch !== '[') continue;
-    const candidate = s.slice(i).trim();
-    if (!candidate) continue;
+    const end = findJsonSpanEnd(s, i);
+    if (end < 0) continue;
+    const candidate = s.slice(i, end + 1).trim();
     try {
       JSON.parse(candidate);
-      return candidate;
+      if (!best || candidate.length > best.length) {
+        best = { candidate, length: candidate.length };
+      }
     } catch {
-      // keep scanning older opening braces/brackets
+      // keep scanning remaining spans
     }
   }
-  return undefined;
+  return best?.candidate;
+}
+
+function findJsonSpanEnd(text: string, start: number): number {
+  const open = text[start];
+  const close = open === '{' ? '}' : open === '[' ? ']' : '';
+  if (!close) return -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === open) {
+      depth += 1;
+      continue;
+    }
+    if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return i;
+      continue;
+    }
+  }
+  return -1;
 }
 
 // ─── Stub factory (test / dev) ────────────────────────────────────────────

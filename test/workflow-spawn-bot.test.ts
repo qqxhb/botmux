@@ -88,6 +88,23 @@ describe('parseWorkflowOutput', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toEqual({ ok: true, state: { stage: 'RECEIVED' } });
   });
+
+  it('recovers JSON when interactive hint text wraps around the JSON block', () => {
+    const text =
+      `${WORKFLOW_OUTPUT_BEGIN}\n` +
+      `›Implement {feature}\n` +
+      `{"preview":"x","state":{"gate":{"required":true,"approved":null}}}\n` +
+      `›Implement {feature}\n` +
+      `${WORKFLOW_OUTPUT_END}`;
+    const result = parseWorkflowOutput(text);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({
+        preview: 'x',
+        state: { gate: { required: true, approved: null } },
+      });
+    }
+  });
 });
 
 describe('withWorkflowOutputProtocol', () => {
