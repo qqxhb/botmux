@@ -804,6 +804,15 @@ describe('buildRepoSelectCard', () => {
       expect(labels.join()).not.toContain('beta');
     });
 
+    it('uses main-checkout semantics instead of master/main branch-name filtering', () => {
+      const card = parse(buildRepoSelectCard(projects));
+      const sel = worktreeSelect(card);
+      expect(sel.placeholder.content).toContain('主仓库');
+      const labels = sel.options.map((o: any) => o.text.content);
+      expect(labels.join()).toContain('gamma (develop)');
+      expect(sel.placeholder.content).not.toMatch(/master|main/);
+    });
+
     it('should carry the repo path as the option value and root_id in value', () => {
       const card = parse(buildRepoSelectCard(projects, undefined, 'om_root'));
       const sel = worktreeSelect(card);

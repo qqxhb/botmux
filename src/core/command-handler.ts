@@ -12,7 +12,7 @@ import * as sessionStore from '../services/session-store.js';
 import * as scheduleStore from '../services/schedule-store.js';
 import * as scheduler from './scheduler.js';
 import { scanProjects, scanMultipleProjects, describeProjectDir } from '../services/project-scanner.js';
-import { createRepoWorktree } from '../services/git-worktree.js';
+import { createRepoWorktree, createRepoWorktrees } from '../services/git-worktree.js';
 import { buildRepoSelectCard, buildAdoptSelectCard, buildCodexAppThreadSelectCard, buildSlashListCard, getCliDisplayName, buildConfigCard, buildLandCard } from '../im/lark/card-builder.js';
 import { computeSandboxDiff } from '../services/sandbox-land.js';
 import { createCliAdapterSync } from '../adapters/cli/registry.js';
@@ -1182,6 +1182,82 @@ export async function handleCommand(
           }
           logger.info(`[${logTag}] Repo selected via ${how}: ${selectedPath}`);
         };
+
+        // `/repo wt-batch <branch> <N|name|path>...` → create the same branch
+        // worktree for multiple repos. Unlike single-repo wt, this only reports
+        // a summary and intentionally does NOT switch the session working dir.
+        if (ds && /^wt-batch(\s|$)/i.test(repoArg)) {
+          const rest = repoArg.replace(/^wt-batch\s*/i, '').trim().split(/\s+/).filter(Boolean);
+          if (rest.length < 2) {
+            await sessionReply(rootId, t('cmd.repo.worktree_batch_usage', undefined, loc));
+            break;
+          }
+          const [branchArg, ...targetArgs] = rest;
+          if (targetArgs.length < 2) {
+            await sessionReply(rootId, t('cmd.repo.worktree_batch_min_targets', undefined, loc));
+            break;
+          }
+
+          const repoPaths: string[] = [];
+          for (const targetArg of targetArgs) {
+            if (/^\d+$/.test(targetArg)) {
+              const cached = lastRepoScan.get(ds.chatId);
+              if (!cached || cached.length === 0) {
+                await sessionReply(rootId, t('cmd.repo.no_prior_scan', undefined, loc));
+                break;
+              }
+              const repoIndex = parseInt(targetArg, 10);
+              if (repoIndex < 1 || repoIndex > cached.length) {
+                await sessionReply(rootId, t('cmd.repo.index_out_of_range', { max: cached.length }, loc));
+                break;
+              }
+              repoPaths.push(cached[repoIndex - 1]!.path);
+            } else {
+              const resolved = resolveRepoSelection(targetArg, getProjectScanDirs(ds));
+              if (!resolved) {
+                await sessionReply(rootId, t('cmd.repo.path_not_found', { arg: targetArg }, loc));
+                break;
+              }
+              repoPaths.push(resolved.path);
+            }
+          }
+          if (repoPaths.length !== targetArgs.length) break;
+          if (ds.worktreeCreating) {
+            await sessionReply(rootId, t('cmd.repo.worktree_in_progress', undefined, loc));
+            break;
+          }
+
+          ds.worktreeCreating = true;
+          try {
+            await sessionReply(rootId, t('cmd.repo.worktree_batch_creating', { branch: branchArg!, count: repoPaths.length }, loc));
+            const result = await createRepoWorktrees(repoPaths, { branch: branchArg! });
+            const lines = [
+              t('cmd.repo.worktree_batch_summary', {
+                branch: branchArg!,
+                success: result.successes.length,
+                failure: result.failures.length,
+              }, loc),
+            ];
+            if (result.successes.length > 0) {
+              lines.push('');
+              lines.push(t('cmd.repo.worktree_batch_success_heading', undefined, loc));
+              for (const item of result.successes) {
+                lines.push(`- \`${item.repoPath}\` → \`${item.creation.path}\` (${item.creation.branch}, ${item.creation.baseRef})`);
+              }
+            }
+            if (result.failures.length > 0) {
+              lines.push('');
+              lines.push(t('cmd.repo.worktree_batch_failure_heading', undefined, loc));
+              for (const item of result.failures) {
+                lines.push(`- \`${item.repoPath}\`: ${item.error}`);
+              }
+            }
+            await sessionReply(rootId, lines.join('\n'));
+          } finally {
+            ds.worktreeCreating = false;
+          }
+          break;
+        }
 
         // `/repo wt <N|name|path> [branch]` → create a worktree off the repo's
         // remote default branch and open THAT as the session repo. Without a
@@ -2406,6 +2482,7 @@ export async function handleCommand(
           t('help.repo_n', undefined, loc),
           t('help.repo_path', undefined, loc),
           t('help.repo_wt', undefined, loc),
+          t('help.repo_wt_batch', undefined, loc),
           t('help.status', undefined, loc),
           t('help.card', undefined, loc),
           t('help.term', undefined, loc),

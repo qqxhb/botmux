@@ -135,6 +135,7 @@ vi.mock('../src/services/project-scanner.js', () => ({
 
 vi.mock('../src/services/git-worktree.js', () => ({
   createRepoWorktree: vi.fn(),
+  createRepoWorktrees: vi.fn(),
 }));
 
 vi.mock('../src/im/lark/card-builder.js', () => ({
@@ -365,8 +366,9 @@ import { generateAuthUrl, getTokenStatus } from '../src/utils/user-token.js';
 import { bindOncall } from '../src/services/oncall-store.js';
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { scanMultipleProjects } from '../src/services/project-scanner.js';
+import type { ProjectInfo } from '../src/services/project-scanner.js';
 import { repoPickerScanOptions } from '../src/global-config.js';
-import { createRepoWorktree } from '../src/services/git-worktree.js';
+import { createRepoWorktree, createRepoWorktrees } from '../src/services/git-worktree.js';
 import { discoverAdoptableSessions } from '../src/core/session-discovery.js';
 import { listCodexAppThreads } from '../src/services/codex-app-threads.js';
 import { discoverSlashCommandsForAdapter } from '../src/core/command-discovery.js';
@@ -1353,6 +1355,98 @@ describe('handleCommand', () => {
       expect(replies).toContain('自动切换失败');
       expect(replies).toContain('fork boom');
       expect(replies).not.toContain('创建 worktree 失败');
+    });
+  });
+
+  describe('/repo wt-batch', () => {
+    const SCAN: ProjectInfo[] = [
+      { name: 'project-a', path: '/home/testuser/project-a', type: 'repo', branch: 'main' },
+      { name: 'project-b', path: '/home/testuser/project-b', type: 'repo', branch: 'dev' },
+    ];
+
+    it('creates same-branch worktrees for multiple scanned repos without switching the session', async () => {
+      const ds = makeDaemonSession({ pendingRepo: false, workingDir: '/home/testuser/current' });
+      const deps = makeDeps(ds);
+      deps.lastRepoScan.set(CHAT_ID, SCAN);
+      vi.mocked(createRepoWorktrees).mockResolvedValue({
+        successes: [
+          { repoPath: '/home/testuser/project-a', creation: { path: '/home/testuser/project-a-feat-batch', branch: 'feat/batch', baseRef: 'origin/main' } },
+          { repoPath: '/home/testuser/project-b', creation: { path: '/home/testuser/project-b-feat-batch', branch: 'feat/batch', baseRef: 'origin/dev' } },
+        ],
+        failures: [],
+      });
+
+      await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo wt-batch feat/batch 1 2'), deps, LARK_APP_ID);
+
+      expect(createRepoWorktrees).toHaveBeenCalledWith(['/home/testuser/project-a', '/home/testuser/project-b'], { branch: 'feat/batch' });
+      expect(ds.workingDir).toBe('/home/testuser/current');
+      expect(sessionStore.updateSession).not.toHaveBeenCalled();
+      expect(forkWorker).not.toHaveBeenCalled();
+      expect(killWorker).not.toHaveBeenCalled();
+      expect(ds.worktreeCreating).toBe(false);
+      const replies = vi.mocked(deps.sessionReply).mock.calls.map(c => c[1]).join('\n');
+      expect(replies).toContain('批量 worktree 创建完成');
+      expect(replies).toContain('成功 2，失败 0');
+      expect(replies).toContain('会话工作目录未切换');
+    });
+
+    it('resolves mixed project names and paths through the shared non-numeric selection flow', async () => {
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(scanMultipleProjects).mockReturnValue([
+        { name: 'project-a', path: '/home/testuser/project-a', branch: 'main' },
+        { name: 'external-repo', path: '/abs/path', branch: 'main' },
+      ]);
+      const ds = makeDaemonSession({ pendingRepo: false, workingDir: '/home/testuser/current' });
+      const deps = makeDeps(ds);
+      vi.mocked(createRepoWorktrees).mockResolvedValue({
+        successes: [
+          { repoPath: '/home/testuser/project-a', creation: { path: '/home/testuser/project-a-feat-batch', branch: 'feat/batch', baseRef: 'origin/main' } },
+          { repoPath: '/abs/path', creation: { path: '/abs/path-feat-batch', branch: 'feat/batch', baseRef: 'origin/main' } },
+        ],
+        failures: [],
+      });
+
+      await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo wt-batch feat/batch project-a /abs/path'), deps, LARK_APP_ID);
+
+      expect(createRepoWorktrees).toHaveBeenCalledWith(['/home/testuser/project-a', '/abs/path'], { branch: 'feat/batch' });
+      expect(ds.workingDir).toBe('/home/testuser/current');
+      expect(sessionStore.updateSession).not.toHaveBeenCalled();
+      expect(forkWorker).not.toHaveBeenCalled();
+      expect(killWorker).not.toHaveBeenCalled();
+      expect(ds.worktreeCreating).toBe(false);
+    });
+
+    it('reports partial failures and still does not switch the session', async () => {
+      const ds = makeDaemonSession({ pendingRepo: false, workingDir: '/home/testuser/current' });
+      const deps = makeDeps(ds);
+      deps.lastRepoScan.set(CHAT_ID, SCAN);
+      vi.mocked(createRepoWorktrees).mockResolvedValue({
+        successes: [
+          { repoPath: '/home/testuser/project-a', creation: { path: '/home/testuser/project-a-feat-batch', branch: 'feat/batch', baseRef: 'origin/main' } },
+        ],
+        failures: [{ repoPath: '/home/testuser/project-b', error: 'already exists' }],
+      });
+
+      await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo wt-batch feat/batch 1 2'), deps, LARK_APP_ID);
+
+      expect(forkWorker).not.toHaveBeenCalled();
+      expect(ds.workingDir).toBe('/home/testuser/current');
+      const replies = vi.mocked(deps.sessionReply).mock.calls.map(c => c[1]).join('\n');
+      expect(replies).toContain('成功 1，失败 1');
+      expect(replies).toContain('already exists');
+    });
+
+    it('requires at least two targets and points single-repo users to /repo wt', async () => {
+      const ds = makeDaemonSession({ pendingRepo: false });
+      const deps = makeDeps(ds);
+      deps.lastRepoScan.set(CHAT_ID, SCAN);
+
+      await handleCommand('/repo', ROOT_ID, makeLarkMessage('/repo wt-batch feat/batch 1'), deps, LARK_APP_ID);
+
+      expect(createRepoWorktrees).not.toHaveBeenCalled();
+      const replies = vi.mocked(deps.sessionReply).mock.calls.map(c => c[1]).join('\n');
+      expect(replies).toContain('至少需要 2 个仓库');
+      expect(replies).toContain('/repo wt');
     });
   });
 

@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { createRepoWorktree } from '../src/services/git-worktree.js';
+import { createRepoWorktree, createRepoWorktrees } from '../src/services/git-worktree.js';
 
 let tempRoot: string;
 
@@ -185,5 +185,41 @@ describe('createRepoWorktree', () => {
     mkdirSync(plain);
 
     await expect(createRepoWorktree(plain)).rejects.toThrow();
+  });
+});
+
+describe('createRepoWorktrees', () => {
+  it('deduplicates repo paths, creates sequentially, and reports successes', async () => {
+    const upstreamA = makeUpstream('upstream-a');
+    const upstreamB = makeUpstream('upstream-b');
+    const repoA = makeClone(upstreamA, 'proj-a');
+    const repoB = makeClone(upstreamB, 'proj-b');
+
+    const res = await createRepoWorktrees([repoA, repoB, repoA], { branch: 'feat/batch' });
+
+    expect(res.failures).toEqual([]);
+    expect(res.successes.map(s => s.repoPath)).toEqual([repoA, repoB]);
+    expect(res.successes.map(s => s.creation.path)).toEqual([
+      join(tempRoot, 'proj-a-feat-batch'),
+      join(tempRoot, 'proj-b-feat-batch'),
+    ]);
+    expect(git(res.successes[0]!.creation.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feat/batch');
+    expect(git(res.successes[1]!.creation.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feat/batch');
+  });
+
+  it('continues after a repo fails without rolling back prior successes', async () => {
+    const upstream = makeUpstream('upstream');
+    const repo = makeClone(upstream, 'proj');
+    const plain = join(tempRoot, 'not-a-repo');
+    mkdirSync(plain);
+
+    const res = await createRepoWorktrees([repo, plain], { branch: 'feat/partial' });
+
+    expect(res.successes).toHaveLength(1);
+    expect(res.successes[0]!.repoPath).toBe(repo);
+    expect(existsSync(res.successes[0]!.creation.path)).toBe(true);
+    expect(res.failures).toHaveLength(1);
+    expect(res.failures[0]!.repoPath).toBe(plain);
+    expect(res.failures[0]!.error.length).toBeGreaterThan(0);
   });
 });

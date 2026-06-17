@@ -25,6 +25,11 @@ export interface WorktreeCreation {
   baseRef: string;
 }
 
+export interface RepoWorktreeBatchResult {
+  successes: Array<{ repoPath: string; creation: WorktreeCreation }>;
+  failures: Array<{ repoPath: string; error: string }>;
+}
+
 async function git(args: string[], cwd: string, timeoutMs = 10_000): Promise<string> {
   try {
     const { stdout } = await execFileP('git', args, { cwd, timeout: timeoutMs, encoding: 'utf-8' });
@@ -153,4 +158,31 @@ export async function createRepoWorktree(
   await git(['worktree', 'add', '-b', branch, wtPath, baseRef], repo, 60_000);
   logger.info(`[git-worktree] created ${wtPath} (branch ${branch} from ${baseRef})`);
   return { path: wtPath, branch, baseRef };
+}
+
+/**
+ * Create the same named branch worktree for multiple main repo checkouts.
+ * Runs sequentially and keeps successful creations even if later repos fail.
+ */
+export async function createRepoWorktrees(
+  repoPaths: string[],
+  opts: { branch: string },
+): Promise<RepoWorktreeBatchResult> {
+  const branch = opts.branch.trim();
+  if (!branch) throw new Error('branch is required');
+
+  const uniqueRepoPaths = [...new Set(repoPaths.map(p => resolve(p)))];
+  const successes: RepoWorktreeBatchResult['successes'] = [];
+  const failures: RepoWorktreeBatchResult['failures'] = [];
+
+  for (const repoPath of uniqueRepoPaths) {
+    try {
+      const creation = await createRepoWorktree(repoPath, { branch });
+      successes.push({ repoPath, creation });
+    } catch (e) {
+      failures.push({ repoPath, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  return { successes, failures };
 }
