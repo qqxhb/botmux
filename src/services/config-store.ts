@@ -23,6 +23,20 @@ export function findEntryIndex(raw: any[], larkAppId: string): number {
   return raw.findIndex((e: any) => e?.larkAppId === larkAppId);
 }
 
+export async function deleteBotEntry(
+  larkAppId: string,
+): Promise<{ ok: true; removed: true } | { ok: false; reason: string }> {
+  const path = requireConfigPath();
+  return withFileLock(path, async () => {
+    const raw = await readRawConfig(path);
+    const idx = findEntryIndex(raw, larkAppId);
+    if (idx < 0) return { ok: false, reason: 'bot_not_in_config' };
+    raw.splice(idx, 1);
+    await writeRawConfigAtomic(path, raw);
+    return { ok: true, removed: true };
+  });
+}
+
 export function requireConfigPath(): string {
   const p = getLoadedConfigPath();
   if (!p) throw new Error('Bot config path unknown — cannot persist config changes');

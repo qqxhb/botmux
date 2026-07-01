@@ -4319,6 +4319,16 @@ button.contrast:hover { background: var(--danger-soft); border-color: var(--dang
 }
 .bd-tile .bd-section { padding-top: 14px; }
 .bd-tile .bd-section + .bd-section { margin-top: 14px; border-top: 1px solid var(--border-soft); }
+.bd-tile .bd-danger-zone {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border-soft));
+}
+.bd-tile .bd-danger-zone .bd-section-title,
+.bd-tile .bd-danger-zone .bd-section-title::before {
+  color: var(--danger);
+}
+.bd-tile .bd-danger-zone .bd-section-title::before {
+  background: var(--danger);
+}
 .bd-tile .bd-section-title {
   font-size: 12.5px;
   letter-spacing: 0.02em;

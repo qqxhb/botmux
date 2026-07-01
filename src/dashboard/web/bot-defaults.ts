@@ -30,6 +30,21 @@ export function displayCliId(bot: any, sessionFallback: string): string {
   return typeof bot?.cliId === 'string' && bot.cliId ? bot.cliId : sessionFallback;
 }
 
+export function botDeleteApiPath(appId: string): string {
+  return `/api/bots/${encodeURIComponent(appId)}`;
+}
+
+export function renderBotDeleteSection(): string {
+  return `<section class="bd-section bd-danger-zone">
+      <h3 class="bd-section-title">${t('botDefaults.sectionDanger')}</h3>
+      <p class="bd-section-note">${t('botDefaults.deleteHelp')}</p>
+      <div class="actions">
+        <button type="button" class="contrast" data-action="delete-bot">${t('botDefaults.deleteBot')}</button>
+        <span class="oncall-status" data-delete-bot-status></span>
+      </div>
+    </section>`;
+}
+
 type BotProfileRoleItem = {
   profileId: string;
   loaded?: boolean;
@@ -320,7 +335,7 @@ export function wireBotDefaultsPage(root: HTMLElement): PageDisposer {
         <section class="bd-tile">${renderRoleSection(b)}</section>
         <section class="bd-tile">${renderSessionModeSection(b)}${renderCrossBotSection(b)}${renderSessionCapSection(b)}${renderStartupCommandsSection(b)}${renderLaunchShellSection(b)}${renderEnvSection(b)}</section>
         <section class="bd-tile">${renderCardBehaviorSection(b)}${renderSummaryTriggerSection(b)}${renderBrandSection(b)}</section>
-        <section class="bd-tile">${renderGrantSection(b)}</section>
+        <section class="bd-tile">${renderGrantSection(b)}${renderBotDeleteSection()}</section>
       </div>
     </article>`;
   }
@@ -840,6 +855,42 @@ export function wireBotDefaultsPage(root: HTMLElement): PageDisposer {
     listEl.querySelectorAll<HTMLElement>('.bd-card').forEach(card => {
       const appId = card.dataset.appid!;
       void ensureProfileRolesLoaded(appId, card);
+      const botSnapshot = () => cache.bots.find((bb: any) => bb.larkAppId === appId);
+
+      const deleteBotBtn = card.querySelector<HTMLButtonElement>('button[data-action=delete-bot]');
+      const deleteBotStatusEl = card.querySelector<HTMLSpanElement>('[data-delete-bot-status]');
+      if (deleteBotBtn && deleteBotStatusEl) {
+        deleteBotBtn.addEventListener('click', async () => {
+          const bot = botSnapshot();
+          const label = bot?.botName || appId;
+          if (!window.confirm(t('botDefaults.deleteConfirm', { name: label }))) return;
+          deleteBotStatusEl.textContent = '';
+          deleteBotStatusEl.className = 'oncall-status';
+          deleteBotBtn.disabled = true;
+          try {
+            const r = await fetch(botDeleteApiPath(appId), { method: 'DELETE' });
+            const body = await r.json().catch(() => ({}));
+            if (r.ok && body.ok) {
+              deleteBotStatusEl.textContent = `✓ ${t('botDefaults.deleteDone')}`;
+              deleteBotStatusEl.classList.add('hint-ok');
+              cache.bots = cache.bots.filter((bb: any) => bb.larkAppId !== appId);
+              botProfileRoleCache.delete(appId);
+              selectedAppId = cache.bots[0]?.larkAppId ?? null;
+              await loadBots();
+              safeRerender();
+            } else {
+              deleteBotStatusEl.textContent = `✗ ${body.error ?? r.status}`;
+              deleteBotStatusEl.classList.add('hint-warn-inline');
+            }
+          } catch (e: any) {
+            deleteBotStatusEl.textContent = `✗ ${e?.message ?? e}`;
+            deleteBotStatusEl.classList.add('hint-warn-inline');
+          } finally {
+            deleteBotBtn.disabled = false;
+          }
+        });
+      }
+
       // ── 默认工作目录模式（三选一互斥：off / default / oncall）─────────────────
       const wdModeSel = card.querySelector<HTMLSelectElement>('select[data-input=workingDirMode]');
       const input = card.querySelector<HTMLInputElement>('input[data-input=workingDir]');

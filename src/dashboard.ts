@@ -98,6 +98,7 @@ import type { SafeInsightOverview } from './services/insight/types.js';
 import { readPlatformBinding } from './platform/binding.js';
 import { startPlatformTunnelClient, type PlatformBotInfo } from './platform/tunnel-client.js';
 import { cleanupIdleSessions, parseIdleCleanupHours } from './dashboard/session-cleanup.js';
+import { deleteBotEntry } from './services/config-store.js';
 
 const SECRET_PATH = join(homedir(), '.botmux', '.dashboard-secret');
 const TOKEN_PATH = join(homedir(), '.botmux', '.dashboard-token');
@@ -561,6 +562,14 @@ function configuredBotAgentFields(): Map<string, { cliId?: string; wrapperCli?: 
     }]));
   } catch {
     return new Map();
+  }
+}
+
+function configuredBotIds(): Set<string> | null {
+  try {
+    return new Set(loadBotConfigs().map(b => b.larkAppId));
+  } catch {
+    return null;
   }
 }
 
@@ -2007,7 +2016,11 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/api/bots') {
       const agentFields = configuredBotAgentFields();
-      const onlineBots = [...registry.list()].map(b => withConfiguredCliId(b, agentFields)).sort((a, b) => a.botIndex - b.botIndex);
+      const configuredIds = configuredBotIds();
+      const onlineBots = [...registry.list()]
+        .filter(b => configuredIds === null || configuredIds.has(b.larkAppId))
+        .map(b => withConfiguredCliId(b, agentFields))
+        .sort((a, b) => a.botIndex - b.botIndex);
       const out = await Promise.all(onlineBots.map(async d => {
         try {
           const r = await fetch(`http://127.0.0.1:${d.ipcPort}/api/bot-default-oncall`);
@@ -2027,6 +2040,26 @@ const server = createServer(async (req, res) => {
         }
       }));
       return jsonRes(res, 200, { bots: out });
+    }
+
+    let mBotDelete: RegExpMatchArray | null;
+    if (req.method === 'DELETE' && (mBotDelete = url.pathname.match(/^\/api\/bots\/([^/]+)$/))) {
+      const appId = decodeURIComponent(mBotDelete[1]);
+      try {
+        loadBotConfigs();
+      } catch (err) {
+        return jsonRes(res, 400, {
+          ok: false,
+          error: 'config_unavailable',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const r = await deleteBotEntry(appId);
+      if (!r.ok) {
+        const status = r.reason === 'bot_not_in_config' ? 404 : 400;
+        return jsonRes(res, status, { ok: false, error: r.reason });
+      }
+      return jsonRes(res, 200, { ok: true, larkAppId: appId, restartRequired: true });
     }
 
     let mBotDef: RegExpMatchArray | null;
